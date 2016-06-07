@@ -106,6 +106,67 @@ func checkDir(path string) error {
 	return nil
 }
 
+func doMergeMode(hdfs HDFS, ch chan string, fileGroups [][]string, output string) {
+	var wg sync.WaitGroup
+	log.Println("tempDir: ", tempDir)
+	defer os.RemoveAll(tempDir)
+	for _, files := range fileGroups {
+		wg.Add(1)
+		go func(files []string) {
+			defer wg.Done()
+			downloadWithChan(hdfs, files, tempDir, ch)
+		}(files)
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+	mergeFiles(ch, output)
+}
+
+// merge as a single files
+func mergeFiles(ch chan string, output string) {
+	out, err := os.Create(output)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for f := range ch {
+		in, err := os.Open(f)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if _, err := io.Copy(out, in); err != nil {
+			log.Fatal(err)
+		}
+		err = in.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+		err = os.Remove(f)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	err = out.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+// put files into a directory
+func doFilesMode(hdfs HDFS, ch chan string, fileGroups [][]string, outputDir string) {
+	var wg sync.WaitGroup
+	for _, files := range fileGroups {
+		wg.Add(1)
+		go func(files []string) {
+			defer wg.Done()
+			hdfs.Gets(files, outputDir)
+		}(files)
+	}
+	wg.Wait()
+	close(ch)
+}
+
 func main() {
 	flag.Parse()
 	if flag.NArg() != 2 {
@@ -128,44 +189,10 @@ func main() {
 	files := hdfs.Ls(input)
 	slices := chunk(files, *parallel)
 	ch := make(chan string, len(files))
-	var wg sync.WaitGroup
 	if *mergeMode {
-		log.Println("tempDir: ", tempDir)
-		defer os.RemoveAll(tempDir)
-		for _, files := range slices {
-			wg.Add(1)
-			go func(files []string) {
-				defer wg.Done()
-				downloadWithChan(hdfs, files, tempDir, ch)
-			}(files)
-		}
+		doMergeMode(hdfs, ch, slices, output)
 	} else {
-		for _, files := range slices {
-			wg.Add(1)
-			go func(files []string) {
-				defer wg.Done()
-				hdfs.Gets(files, output)
-			}(files)
-		}
-
-	}
-	if *mergeMode {
-		go func() {
-			wg.Wait()
-			close(ch)
-		}()
-		out, _ := os.Create(output)
-		for f := range ch {
-			in, _ := os.Open(f)
-			if _, err := io.Copy(out, in); err != nil {
-				log.Fatal(err)
-			}
-			in.Close()
-			os.Remove(f)
-		}
-		out.Close()
-	} else {
-		wg.Wait()
-		close(ch)
+		outputDir := output
+		doFilesMode(hdfs, ch, slices, outputDir)
 	}
 }
