@@ -1,6 +1,6 @@
 pdoop
 
-A golang written utilities to get files from a HDFS directory in parallel.
+A golang written utilities to get files from a HDFS directory in parallel. In my working environment it's about 3.8 times faster than using `hadoop fs -getmerge` when merging as a single file.
 
 It relies on $HADOOP_HOME environmental variable.
 
