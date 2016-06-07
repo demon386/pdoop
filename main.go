@@ -22,8 +22,6 @@ var mergeMode = flag.Bool("m", false, "merge as a single file")
 type HDFS struct {
 	hadoopHome string
 	hadoopCmd  string
-	fsName     string
-	fsUgi      string
 }
 
 func NewHDFS() HDFS {
