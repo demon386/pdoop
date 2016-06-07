@@ -11,4 +11,5 @@ Usage:
 Options:
 
 - `-m`: merge hdfs dir as a single file. It's disabled by default.
+  NOTE: when merging as a single file, the order of different files are not guaranteed.
 - `-p`: number of parallel downloads, 10 by default.
