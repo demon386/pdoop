@@ -15,7 +15,6 @@ import (
 	"sync"
 )
 
-var tempDir, _ = ioutil.TempDir("", "pdoop")
 var parallel = flag.Int("p", 10, "parallel")
 var mergeMode = flag.Bool("m", false, "merge as a single file")
 
@@ -108,8 +107,9 @@ func checkDir(path string) error {
 
 func doMergeMode(hdfs HDFS, ch chan string, fileGroups [][]string, output string) {
 	var wg sync.WaitGroup
-	log.Println("tempDir: ", tempDir)
+	var tempDir, _ = ioutil.TempDir("", "pdoop")
 	defer os.RemoveAll(tempDir)
+	log.Println("tempDir: ", tempDir)
 	for _, files := range fileGroups {
 		wg.Add(1)
 		go func(files []string) {
@@ -124,7 +124,7 @@ func doMergeMode(hdfs HDFS, ch chan string, fileGroups [][]string, output string
 	mergeFiles(ch, output)
 }
 
-// merge as a single files
+// merge files from channel as a single files
 func mergeFiles(ch chan string, output string) {
 	out, err := os.Create(output)
 	if err != nil {
@@ -182,7 +182,6 @@ func main() {
 		err := checkDir(output)
 		if err != nil {
 			log.Fatal(err)
-			os.Exit(1)
 		}
 	}
 	hdfs := NewHDFS()
