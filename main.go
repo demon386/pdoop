@@ -6,13 +6,11 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"math"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 )
 
 var parallel = flag.Int("p", 10, "parallel")
@@ -78,22 +76,6 @@ func downloadWithChan(hdfs HDFS, remoteFiles []string, localDir string, ch chan 
 	}
 }
 
-func chunk(lst []string, chunkNum int) (output [][]string) {
-	chunkSize := int(math.Ceil(float64(len(lst)) / float64(chunkNum)))
-	for i := 0; i < chunkNum; i++ {
-		start := i * chunkSize
-		end := start + chunkSize
-		if start >= len(lst) {
-			break
-		}
-		if end > len(lst) {
-			end = len(lst)
-		}
-		output = append(output, lst[start:end])
-	}
-	return output
-}
-
 func checkDir(path string) error {
 	fileInfo, err := os.Stat(path)
 	if err != nil {
@@ -105,66 +87,93 @@ func checkDir(path string) error {
 	return nil
 }
 
-func doMergeMode(hdfs HDFS, ch chan string, fileGroups [][]string, output string) {
-	var wg sync.WaitGroup
+func doMergeMode(hdfs HDFS, files []string, outputFile string) error {
 	var tempDir, _ = ioutil.TempDir("", "pdoop")
 	defer os.RemoveAll(tempDir)
 	log.Println("tempDir: ", tempDir)
-	for _, files := range fileGroups {
-		wg.Add(1)
-		go func(files []string) {
-			defer wg.Done()
-			downloadWithChan(hdfs, files, tempDir, ch)
-		}(files)
-	}
+	filesCh := make(chan string)
+	resultsCh := make(chan string, len(outputFile))
+	defer close(resultsCh)
+	// feed files
 	go func() {
-		wg.Wait()
-		close(ch)
+		for _, f := range files {
+			filesCh <- f
+		}
+		close(filesCh)
 	}()
-	mergeFiles(ch, output)
+	// parallel working on it and generate results
+	for i := 0; i < *parallel; i++ {
+		go func() {
+			for f := range filesCh {
+				hdfs.Get(f, tempDir)
+				baseName := filepath.Base(f)
+				resultsCh <- path.Join(tempDir, baseName)
+			}
+		}()
+	}
+	err := mergeFiles(resultsCh, len(files), outputFile)
+	return err
 }
 
 // merge files from channel as a single files
-func mergeFiles(ch chan string, output string) {
+func mergeFiles(resultsCh <-chan string, count int, output string) error {
 	out, err := os.Create(output)
 	if err != nil {
 		log.Fatal(err)
 	}
-	for f := range ch {
+	for i := 0; i < count; i++ {
+		f := <-resultsCh
 		in, err := os.Open(f)
 		if err != nil {
 			log.Fatal(err)
+			return err
 		}
 		if _, err := io.Copy(out, in); err != nil {
 			log.Fatal(err)
+			return err
 		}
 		err = in.Close()
 		if err != nil {
 			log.Fatal(err)
+			return err
 		}
 		err = os.Remove(f)
 		if err != nil {
 			log.Fatal(err)
+			return err
 		}
 	}
 	err = out.Close()
 	if err != nil {
 		log.Fatal(err)
+		return err
 	}
+	return nil
 }
 
 // put files into a directory
-func doFilesMode(hdfs HDFS, ch chan string, fileGroups [][]string, outputDir string) {
-	var wg sync.WaitGroup
-	for _, files := range fileGroups {
-		wg.Add(1)
-		go func(files []string) {
-			defer wg.Done()
-			hdfs.Gets(files, outputDir)
-		}(files)
+func doFilesMode(hdfs HDFS, files []string, outputDir string) error {
+	filesCh := make(chan string)
+	resultsCh := make(chan struct{})
+	defer close(resultsCh)
+	go func() {
+		for _, f := range files {
+			filesCh <- f
+		}
+		close(filesCh)
+	}()
+	for i := 0; i < *parallel; i++ {
+		go func() {
+			for f := range filesCh {
+				hdfs.Get(f, outputDir)
+				resultsCh <- struct{}{}
+			}
+		}()
 	}
-	wg.Wait()
-	close(ch)
+	for range files {
+		<-resultsCh
+	}
+	return nil
 }
 
 func main() {
@@ -186,12 +195,9 @@ func main() {
 	}
 	hdfs := NewHDFS()
 	files := hdfs.Ls(input)
-	slices := chunk(files, *parallel)
-	ch := make(chan string, len(files))
 	if *mergeMode {
-		doMergeMode(hdfs, ch, slices, output)
+		doMergeMode(hdfs, files, output)
 	} else {
-		outputDir := output
-		doFilesMode(hdfs, ch, slices, outputDir)
+		doFilesMode(hdfs, files, output)
 	}
 }
